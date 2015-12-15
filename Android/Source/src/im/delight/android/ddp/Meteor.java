@@ -18,9 +18,18 @@ package im.delight.android.ddp;
 
 import android.content.SharedPreferences;
 import android.content.Context;
+
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.Queue;
 import java.util.Iterator;
+
+import android.util.Log;
+import com.firebase.tubesock.WebSocket;
+import com.firebase.tubesock.WebSocketEventHandler;
+import com.firebase.tubesock.WebSocketException;
+import com.firebase.tubesock.WebSocketMessage;
 import org.codehaus.jackson.map.ObjectMapper;
 import java.util.UUID;
 import java.util.Arrays;
@@ -29,9 +38,6 @@ import org.codehaus.jackson.JsonProcessingException;
 import org.codehaus.jackson.JsonNode;
 import java.util.HashMap;
 import java.util.Map;
-import de.tavendo.autobahn.WebSocketException;
-import de.tavendo.autobahn.WebSocketHandler;
-import de.tavendo.autobahn.WebSocketConnection;
 
 /** Client that connects to Meteor servers implementing the DDP protocol */
 public class Meteor {
@@ -44,9 +50,7 @@ public class Meteor {
 	/** Instance of Jackson library's ObjectMapper that converts between JSON and Java objects (POJOs) */
 	private static final ObjectMapper mObjectMapper = new ObjectMapper();
 	/** The WebSocket connection that will be used for the data transfer */
-	private final WebSocketConnection mConnection;
-	/** The callback that handles messages and events received from the WebSocket connection */
-	private final WebSocketHandler mWebSocketHandler;
+	private final WebSocket mConnection;
 	/** Map that tracks all pending Listener instances */
 	private final Map<String, Listener> mListeners;
 	/** Messages that couldn't be dispatched yet and thus had to be queued */
@@ -54,7 +58,6 @@ public class Meteor {
 	private final Context mContext;
 	/** Whether logging should be enabled or not */
 	private static boolean mLoggingEnabled;
-	private String mServerUri;
 	private String mDdpVersion;
 	/** The number of unsuccessful attempts to re-connect in sequence */
 	private int mReconnectAttempts;
@@ -98,11 +101,17 @@ public class Meteor {
 		mContext = context.getApplicationContext();
 
 		// create a new WebSocket connection for the data transfer
-		mConnection = new WebSocketConnection();
+		URI url = null;
+		try {
+			url = new URI(serverUri);
+		} catch (URISyntaxException e) {
+			e.printStackTrace();
+			throw new RuntimeException("Invalid server uri: " + serverUri);
+		}
+		mConnection = new WebSocket(url);
 
 		// create a new handler that processes the messages and events received from the WebSocket connection
-		mWebSocketHandler = new WebSocketHandler() {
-
+		mConnection.setEventHandler(new WebSocketEventHandler() {
 			@Override
 			public void onOpen() {
 				log(TAG);
@@ -114,11 +123,17 @@ public class Meteor {
 			}
 
 			@Override
-			public void onClose(int code, String reason) {
+			public void onMessage(WebSocketMessage webSocketMessage) {
+				log(TAG);
+				log("  onTextMessage");
+				log("    payload == " + webSocketMessage.getText());
+				handleMessage(webSocketMessage.getText());
+			}
+
+			@Override
+			public void onClose() {
 				log(TAG);
 				log("  onClose");
-				log("    code == "+code);
-				log("    reason == "+reason);
 
 				final boolean lostConnection = mConnected;
 				mConnected = false;
@@ -134,19 +149,39 @@ public class Meteor {
 				}
 
 				if (mCallback != null) {
-					mCallback.onDisconnect(code, reason);
+					mCallback.onDisconnect();
 				}
 			}
 
 			@Override
-			public void onTextMessage(String payload) {
+			public void onError(WebSocketException e) {
 				log(TAG);
-				log("  onTextMessage");
-				log("    payload == "+payload);
-				handleMessage(payload);
+				log("  onError");
+				log("    reason == " + e.getMessage());
+
+				final boolean lostConnection = mConnected;
+				mConnected = false;
+				if (lostConnection) {
+					mReconnectAttempts++;
+					if (mReconnectAttempts <= RECONNECT_ATTEMPTS_MAX) {
+						// try to re-connect automatically
+						openConnection(false);
+					}
+					else {
+						disconnect();
+					}
+				}
+
+				if (mCallback != null) {
+					mCallback.onException(e);
+				}
 			}
 
-		};
+			@Override
+			public void onLogMessage(String s) {
+				log(s);
+			}
+		});
 
 		// create a map that holds the pending Listener instances
 		mListeners = new HashMap<String, Listener>();
@@ -154,8 +189,6 @@ public class Meteor {
 		// create a queue that holds undispatched messages waiting to be sent
 		mQueuedMessages = new ConcurrentLinkedQueue<String>();
 
-		// save the server URI
-		mServerUri = serverUri;
 		// try with the preferred DDP protocol version first
 		mDdpVersion = protocolVersion;
 		// count the number of failed attempts to re-connect
@@ -185,14 +218,14 @@ public class Meteor {
 	 */
 	private void openConnection(final boolean isReconnect) {
 		if (isReconnect) {
-			if (mConnection.isConnected()) {
+			if (mConnected) {
 				connect(mSessionID);
 				return;
 			}
 		}
 
 		try {
-			mConnection.connect(mServerUri, mWebSocketHandler);
+			mConnection.connect();
 		}
 		catch (WebSocketException e) {
 			if (mCallback != null) {
@@ -224,7 +257,7 @@ public class Meteor {
 		mSessionID = null;
 		mCallback = null;
 		try {
-			mConnection.disconnect();
+			mConnection.close();
 		}
 		catch (Exception e) { }
 	}
@@ -262,7 +295,7 @@ public class Meteor {
 
 		if (mConnected) {
 			log("    dispatching");
-			mConnection.sendTextMessage(message);
+			mConnection.send(message);
 		}
 		else {
 			log("    queueing");
