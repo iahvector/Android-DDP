@@ -19,6 +19,9 @@ package im.delight.android.ddp;
 import java.util.List;
 import java.util.LinkedList;
 import android.content.Context;
+import android.os.Bundle;
+import android.os.Looper;
+import android.os.Message;
 import im.delight.android.ddp.MeteorCallback;
 import im.delight.android.ddp.Meteor;
 
@@ -27,7 +30,7 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 
 	private static final String TAG = "MeteorSingleton";
 	private static MeteorSingleton mInstance;
-	private final List<MeteorCallback> mCallbacks = new LinkedList<MeteorCallback>();
+	private EventHandler handler;
 
 	public synchronized static MeteorSingleton createInstance(final Context context, final String serverUri) {
 		return createInstance(context, serverUri, null);
@@ -45,7 +48,7 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 			mInstance = new MeteorSingleton(context, serverUri, protocolVersion);
 		}
 
-		mInstance.mCallback = mInstance;
+		mInstance.setCallback(mInstance);
 
 		return mInstance;
 	}
@@ -64,14 +67,14 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 
 	@Override
 	public void setCallback(final MeteorCallback callback) {
-		if (callback != null) {
-			mCallbacks.add(callback);
+		if (handler != null && callback != null) {
+			handler.setCallback(callback);
 		}
 	}
 
 	public void unsetCallback(final MeteorCallback callback) {
-		if (callback != null) {
-			mCallbacks.remove(callback);
+		if (handler != null && callback != null) {
+			handler.unsetCallback(callback);
 		}
 	}
 
@@ -81,6 +84,8 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 
 	private MeteorSingleton(final Context context, final String serverUri, final String protocolVersion) {
 		super(context, serverUri, protocolVersion);
+
+		handler = new EventHandler(Looper.getMainLooper());
 	}
 
 	@Override
@@ -89,10 +94,11 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 		log("  onConnect");
 		log("    signedInAutomatically == "+signedInAutomatically);
 
-		for (MeteorCallback callback : mCallbacks) {
-			if (callback != null) {
-				callback.onConnect(signedInAutomatically);
-			}
+		if (handler != null) {
+			Message msg = Message.obtain();
+			msg.what = EventHandler.EVENT_CONNECTION_OPENED;
+			msg.arg1 = signedInAutomatically? 1 : 0;
+			handler.sendMessage(msg);
 		}
 	}
 
@@ -101,10 +107,8 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 		log(TAG);
 		log("  onDisconnect");
 
-		for (MeteorCallback callback : mCallbacks) {
-			if (callback != null) {
-				callback.onDisconnect();
-			}
+		if (handler != null) {
+			handler.sendEmptyMessage(EventHandler.EVENT_CONNECTION_CLOSED);
 		}
 	}
 
@@ -116,10 +120,16 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 		log("    documentID == "+documentID);
 		log("    newValuesJson == "+newValuesJson);
 
-		for (MeteorCallback callback : mCallbacks) {
-			if (callback != null) {
-				callback.onDataAdded(collectionName, documentID, newValuesJson);
-			}
+		if (handler != null) {
+			Bundle b = new Bundle();
+			b.putString(EventHandler.PARAM_COLLECTION_NAME, collectionName);
+			b.putString(EventHandler.PARAM_DOCUMENT_ID, documentID);
+			b.putString(EventHandler.PARAM_NEW_VALUES_JSON, newValuesJson);
+
+			Message msg = Message.obtain();
+			msg.what = EventHandler.EVENT_DATA_ADDED;
+			msg.setData(b);
+			handler.sendMessage(msg);
 		}
 	}
 
@@ -132,10 +142,17 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 		log("    updatedValuesJson == "+updatedValuesJson);
 		log("    removedValuesJson == "+removedValuesJson);
 
-		for (MeteorCallback callback : mCallbacks) {
-			if (callback != null) {
-				callback.onDataChanged(collectionName, documentID, updatedValuesJson, removedValuesJson);
-			}
+		if (handler != null) {
+			Bundle b = new Bundle();
+			b.putString(EventHandler.PARAM_COLLECTION_NAME, collectionName);
+			b.putString(EventHandler.PARAM_DOCUMENT_ID, documentID);
+			b.putString(EventHandler.PARAM_NEW_VALUES_JSON, updatedValuesJson);
+			b.putString(EventHandler.PARAM_REMOVED_VALUES_JSON, removedValuesJson);
+
+			Message msg = Message.obtain();
+			msg.what = EventHandler.EVENT_DATA_CHANGED;
+			msg.setData(b);
+			handler.sendMessage(msg);
 		}
 	}
 
@@ -146,10 +163,15 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 		log("    collectionName == "+collectionName);
 		log("    documentID == "+documentID);
 
-		for (MeteorCallback callback : mCallbacks) {
-			if (callback != null) {
-				callback.onDataRemoved(collectionName, documentID);
-			}
+		if (handler != null) {
+			Bundle b = new Bundle();
+			b.putString(EventHandler.PARAM_COLLECTION_NAME, collectionName);
+			b.putString(EventHandler.PARAM_DOCUMENT_ID, documentID);
+
+			Message msg = Message.obtain();
+			msg.what = EventHandler.EVENT_DATA_REMOVED;
+			msg.setData(b);
+			handler.sendMessage(msg);
 		}
 	}
 
@@ -159,10 +181,11 @@ public class MeteorSingleton extends Meteor implements MeteorCallback {
 		log("  onException");
 		log("    e == "+e);
 
-		for (MeteorCallback callback : mCallbacks) {
-			if (callback != null) {
-				callback.onException(e);
-			}
+		if (handler != null) {
+			Message msg = Message.obtain();
+			msg.what = EventHandler.EVENT_ERROR;
+			msg.obj = e;
+			handler.sendMessage(msg);
 		}
 	}
 
